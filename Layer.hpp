@@ -2,7 +2,7 @@
 
 #define LAYER_H
 #define E 2.71828182845
-#define normalize(x) (1+1/pow(E, -x))
+#define normalize(x) (1/(1+pow(E, -x)))
 #include <iostream>
 #include <vector>
 
