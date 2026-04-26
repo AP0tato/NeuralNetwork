@@ -1,0 +1,80 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(NeuralNetwork VERSION 0.1.0 LANGUAGES CXX OBJCXX)
+
+if(NOT APPLE)
+	message(FATAL_ERROR "This project currently targets macOS only (Metal framework required).")
+endif()
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+set(SRC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src")
+set(METAL_DIR "${SRC_DIR}/metal")
+
+file(GLOB CPP_SOURCES "${SRC_DIR}/*.cpp")
+file(GLOB MM_SOURCES "${METAL_DIR}/*.mm")
+
+list(REMOVE_ITEM CPP_SOURCES "${SRC_DIR}/test.cpp")
+
+add_library(neural_backend STATIC ${CPP_SOURCES} ${MM_SOURCES})
+
+target_include_directories(neural_backend
+	PUBLIC
+		"${SRC_DIR}"
+		"${METAL_DIR}"
+)
+
+find_library(METAL_FRAMEWORK Metal REQUIRED)
+find_library(FOUNDATION_FRAMEWORK Foundation REQUIRED)
+
+target_link_libraries(neural_backend
+	PRIVATE
+		${METAL_FRAMEWORK}
+		${FOUNDATION_FRAMEWORK}
+)
+
+set(METAL_SHADER "${METAL_DIR}/functions.metal")
+set(AIR_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/functions.air")
+set(METALLIB_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/functions.metallib")
+
+find_program(XCRUN_EXECUTABLE xcrun PATHS /usr/bin /Applications/Xcode.app/Contents/Developer/usr/bin)
+
+if(XCRUN_EXECUTABLE)
+	add_custom_command(
+		OUTPUT "${AIR_OUTPUT}"
+		COMMAND "${XCRUN_EXECUTABLE}" -sdk macosx metal -c "${METAL_SHADER}" -o "${AIR_OUTPUT}"
+		DEPENDS "${METAL_SHADER}"
+		COMMENT "Compiling Metal shader to AIR"
+		VERBATIM
+	)
+
+	add_custom_command(
+		OUTPUT "${METALLIB_OUTPUT}"
+		COMMAND "${XCRUN_EXECUTABLE}" -sdk macosx metallib "${AIR_OUTPUT}" -o "${METALLIB_OUTPUT}"
+		DEPENDS "${AIR_OUTPUT}"
+		COMMENT "Linking AIR into metallib"
+		VERBATIM
+	)
+
+	add_custom_target(metal_shaders ALL DEPENDS "${METALLIB_OUTPUT}")
+	add_dependencies(neural_backend metal_shaders)
+
+	add_custom_command(TARGET neural_backend POST_BUILD
+		COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${METALLIB_OUTPUT}" "$<TARGET_FILE_DIR:neural_backend>/functions.metallib"
+		COMMENT "Copying functions.metallib next to built library"
+	)
+else()
+	message(WARNING "xcrun not found; skipping Metal shader compilation. Install Xcode Command Line Tools: xcode-select --install")
+endif()
+
+enable_testing()
+add_executable(nn_test "${SRC_DIR}/test.cpp")
+target_link_libraries(nn_test PRIVATE neural_backend)
+
+if(TARGET metal_shaders)
+	add_dependencies(nn_test metal_shaders)
+endif()
+
+add_test(NAME nn_test COMMAND nn_test)
