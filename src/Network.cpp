@@ -5,7 +5,14 @@ Layer::Layer(unsigned long num_nodes_in, unsigned long num_nodes_out)
     this->num_nodes_in = num_nodes_in;
     this->num_nodes_out = num_nodes_out;
     
-    weights.resize(num_nodes_in * num_nodes_out, 0.1f);
+    // Xavier initialization: weights ~ U(-limit, limit) where limit = sqrt(6 / (in + out))
+    float xavier_limit = sqrt(6.0f / (num_nodes_in + num_nodes_out));
+    weights.resize(num_nodes_in * num_nodes_out);
+    for (size_t i = 0; i < weights.size(); i++) {
+        // Simple pseudo-random using sine for deterministic but varied init
+        weights[i] = xavier_limit * (2.0f * fmod(sin(i * 12.9898f) * 43758.5453f, 1.0f) - 1.0f);
+    }
+    
     biases.resize(num_nodes_out, 0.0f);
     
     // Allocate GPU memory ONCE for everything
@@ -24,13 +31,15 @@ Layer::~Layer() {
 
 float Layer::sigmoid(float x)
 {
-    { return 1/(1+pow(M_E, -x)); }
+    // Numerically stable sigmoid
+    if (x > 20.0f) return 1.0f;      // Avoid overflow
+    if (x < -20.0f) return 0.0f;     // Avoid underflow
+    return 1.0f / (1.0f + exp(-x));
 }
 
 float Layer::sigmoid_derivative(float x)
 {
-    float activation = sigmoid(x);
-    return activation * (1 - activation);
+    return x * (1.0f - x);
 }
 
 float Layer::cost_derivative(float actual, float expected)
@@ -56,10 +65,13 @@ std::vector<float> Layer::get_outputs(std::vector<float> in)
 
     // 3. Pull the data back so the CPU knows the "values" (activations)
     std::vector<float> out;
-    gpu.read_buffer(output_gpu_buffer, out); 
+    gpu.read_buffer(output_gpu_buffer, out);
     
-    // Apply activation function and store
-    for(float &f : out) f = sigmoid(f);
+    // 4. Add biases and apply activation function
+    for(size_t i = 0; i < out.size(); i++) {
+        float pre_sig = out[i] + biases[i];
+        out[i] = sigmoid(pre_sig);
+    }
     this->values = out;
 
     return out;
@@ -71,18 +83,29 @@ std::vector<float> Layer::get_outputs(std::vector<float> in)
 
 void Layer::update_weights(const std::vector<float>& delta, float learning_rate) 
 {
+    const float GRAD_CLIP = 5.0f;  // Gradient clipping threshold
+    
     for (size_t i = 0; i < num_nodes_in; i++) {
         float input_val = inputs[i];
         for (size_t j = 0; j < num_nodes_out; j++) {
-            // weights[row * width + col]
-            weights[i * num_nodes_out + j] -= learning_rate * delta[j] * input_val;
+            float grad = learning_rate * delta[j] * input_val;
+            
+            // Clip gradient to prevent explosion
+            if (grad > GRAD_CLIP) grad = GRAD_CLIP;
+            if (grad < -GRAD_CLIP) grad = -GRAD_CLIP;
+            
+            weights[i * num_nodes_out + j] -= grad;
         }
     }
 
     gpu.update_buffer(weight_gpu_buffer, weights);
 
+    // Clip bias updates too
     for (size_t j = 0; j < num_nodes_out; j++) {
-        biases[j] -= learning_rate * delta[j];
+        float grad = learning_rate * delta[j];
+        if (grad > GRAD_CLIP) grad = GRAD_CLIP;
+        if (grad < -GRAD_CLIP) grad = -GRAD_CLIP;
+        biases[j] -= grad;
     }
 }
 
@@ -232,16 +255,55 @@ void Network::clear_buffers()
 void Network::set_all_parameters(const std::vector<float>& params) 
 {
     size_t offset = 0;
-    for (Layer* layer : layers) {
+    std::cerr << "DEBUG: set_all_parameters called with " << params.size() << " params" << std::endl;
+    
+    for (size_t layer_idx = 0; layer_idx < layers.size(); layer_idx++) {
+        Layer* layer = layers[layer_idx];
         // Calculate sizes based on this specific layer
         size_t w_count = layer->get_num_nodes_in() * layer->get_num_nodes_out();
         size_t b_count = layer->get_num_nodes_out();
+
+        std::cerr << "  Layer " << layer_idx << ": in=" << layer->get_num_nodes_in() 
+                  << " out=" << layer->get_num_nodes_out() 
+                  << " w_count=" << w_count << " b_count=" << b_count << std::endl;
 
         // Slice the flat vector
         std::vector<float> w(params.begin() + offset, params.begin() + offset + w_count);
         offset += w_count;
         std::vector<float> b(params.begin() + offset, params.begin() + offset + b_count);
         offset += b_count;
+
+        // Fix NaN values in weights - replace with 0.1 (small random-like value)
+        int w_nan_count = 0;
+        for (auto& val : w) {
+            if (std::isnan(val) || std::isinf(val)) {
+                val = 0.1f;
+                w_nan_count++;
+            }
+        }
+        if (w_nan_count > 0) {
+            std::cerr << "    WARNING: Fixed " << w_nan_count << " NaN/Inf weights" << std::endl;
+        }
+
+        // Fix NaN values in biases - replace with 0.0
+        int b_nan_count = 0;
+        for (auto& val : b) {
+            if (std::isnan(val) || std::isinf(val)) {
+                val = 0.0f;
+                b_nan_count++;
+            }
+        }
+        if (b_nan_count > 0) {
+            std::cerr << "    WARNING: Fixed " << b_nan_count << " NaN/Inf biases" << std::endl;
+        }
+
+        // Debug: Check fixed values
+        if (w.size() >= 3) {
+            std::cerr << "    Weights (first 3): " << w[0] << " " << w[1] << " " << w[2] << std::endl;
+        }
+        if (b.size() >= 3) {
+            std::cerr << "    Biases (first 3): " << b[0] << " " << b[1] << " " << b[2] << std::endl;
+        }
 
         // Update CPU and GPU
         layer->set_weights_and_biases(w, b);

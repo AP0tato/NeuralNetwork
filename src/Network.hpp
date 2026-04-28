@@ -64,7 +64,7 @@ class Network
 {
     private:
     std::vector<Layer*> layers;
-    float learning_rate = 0.5;
+    float learning_rate = 0.1;
 
     public:
     Network();

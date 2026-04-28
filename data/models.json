@@ -1,6 +1,6 @@
 {
     "model1": {
-        "input": 768,
+        "input": 784,
         "hidden": [
             128,
             64
