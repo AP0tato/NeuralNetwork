@@ -1,0 +1,18 @@
+{
+    "model1": {
+        "input": 768,
+        "hidden": [
+            128,
+            64
+        ],
+        "output": 10
+    },
+    "model2": {
+        "input": 784,
+        "hidden": [
+            128,
+            64
+        ],
+        "output": 10
+    }
+}

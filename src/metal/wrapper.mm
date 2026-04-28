@@ -64,7 +64,11 @@ MetalWrapper::MetalWrapper(const std::vector<std::string>& functionNames) : impl
     if (state->device != nil)
     {
         NSError* error = nil;
-        NSString* metallibPath = @"functions.metallib";
+        NSString* metallibPath = @"build/functions.metallib";
+        // Fall back to current directory
+        if (![[NSFileManager defaultManager] fileExistsAtPath:metallibPath]) {
+            metallibPath = @"functions.metallib";
+        }
         NSURL* metallibURL = [NSURL fileURLWithPath:metallibPath];
         state->lib = [state->device newLibraryWithURL:metallibURL error:&error];
 
@@ -87,134 +91,98 @@ MetalWrapper::~MetalWrapper()
 
 void MetalWrapper::add_arrays(std::vector<float>& a, std::vector<float>& b, std::vector<float>& out)
 {
-    if (!hasPipeline("add_arrays"))
-    {
-        out.clear();
-        return;
+    @autoreleasepool {
+        if (!hasPipeline("add_arrays"))
+        {
+            out.clear();
+            return;
+        }
+
+        MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
+        const std::size_t count = (a.size() < b.size()) ? a.size() : b.size();
+        if(count == 0)
+        {
+            out.clear();
+            return;
+        }
+
+        out.resize(count);
+
+        id<MTLBuffer> a_buf = [state->device newBufferWithBytes:a.data()
+                                length:count*sizeof(float)
+                                options:MTLResourceStorageModeShared];
+
+        id<MTLBuffer> b_buf = [state->device newBufferWithBytes:b.data()
+                                length:count*sizeof(float)
+                                options:MTLResourceStorageModeShared];
+
+        id<MTLBuffer> out_buf = [state->device newBufferWithLength:count*sizeof(float)
+                                options:MTLResourceStorageModeShared];
+
+        std::size_t idx = state->pipelineIndex["add_arrays"];
+        id<MTLComputePipelineState> pso = state->pipelines[idx];
+        id<MTLCommandBuffer> cmd = [state->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+
+        [enc setComputePipelineState:pso];
+        [enc setBuffer:a_buf offset:0 atIndex:0];
+        [enc setBuffer:b_buf offset:0 atIndex:1];
+        [enc setBuffer:out_buf offset:0 atIndex:2];
+
+        MTLSize grid = MTLSizeMake(count, 1, 1);
+        NSUInteger w = pso.maxTotalThreadsPerThreadgroup;
+        if (w > count) w = count;
+        MTLSize tg = MTLSizeMake(w, 1, 1);
+
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        float* outPtr = static_cast<float*>(out_buf.contents);
+        std::copy(outPtr, outPtr + count, out.begin());
     }
-
-    MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
-    const std::size_t count = (a.size() < b.size()) ? a.size() : b.size();
-    if(count == 0)
-    {
-        out.clear();
-        return;
-    }
-
-    out.resize(count);
-
-    id<MTLBuffer> a_buf = [state->device newBufferWithBytes:a.data()
-                            length:count*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    id<MTLBuffer> b_buf = [state->device newBufferWithBytes:b.data()
-                            length:count*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    id<MTLBuffer> out_buf = [state->device newBufferWithLength:count*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    std::size_t idx = state->pipelineIndex["add_arrays"];
-    id<MTLComputePipelineState> pso = state->pipelines[idx];
-    id<MTLCommandBuffer> cmd = [state->queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-
-    [enc setComputePipelineState:pso];
-    [enc setBuffer:a_buf offset:0 atIndex:0];
-    [enc setBuffer:b_buf offset:0 atIndex:1];
-    [enc setBuffer:out_buf offset:0 atIndex:2];
-
-    MTLSize grid = MTLSizeMake(count, 1, 1);
-    NSUInteger w = pso.maxTotalThreadsPerThreadgroup;
-    if (w > count) w = count;
-    MTLSize tg = MTLSizeMake(w, 1, 1);
-
-    [enc dispatchThreads:grid threadsPerThreadgroup:tg];
-    [enc endEncoding];
-    [cmd commit];
-    [cmd waitUntilCompleted];
-
-    float* outPtr = static_cast<float*>(out_buf.contents);
-    std::copy(outPtr, outPtr + count, out.begin());
 }
 
-void MetalWrapper::multiply_matrices(std::vector<std::vector<float>>& a, std::vector<std::vector<float>>& b, std::vector<std::vector<float>>& out)
+void MetalWrapper::multiply_matrices(const std::vector<float>& a, 
+                                     const std::vector<float>& b, 
+                                     std::vector<float>& out,
+                                     unsigned int rows, 
+                                     unsigned int inner_dim, 
+                                     unsigned int out_cols) 
 {
-    if (!hasPipeline("multiply_matrices"))
-    {
-        out.clear();
-        return;
+    @autoreleasepool {
+        MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
+        uint32_t count = rows * out_cols;
+        out.assign(count, 0.0f);
+
+        id<MTLBuffer> a_buf = [state->device newBufferWithBytes:a.data() length:a.size() * sizeof(float) options:MTLResourceStorageModeShared];
+        id<MTLBuffer> b_buf = [state->device newBufferWithBytes:b.data() length:b.size() * sizeof(float) options:MTLResourceStorageModeShared];
+        id<MTLBuffer> out_buf = [state->device newBufferWithBytes:out.data() length:count * sizeof(float) options:MTLResourceStorageModeShared];
+
+        id<MTLComputePipelineState> pso = state->pipelines[state->pipelineIndex["multiply_matrices"]];
+        id<MTLCommandBuffer> cmd = [state->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+
+        [enc setComputePipelineState:pso];
+        [enc setBuffer:a_buf offset:0 atIndex:0];
+        [enc setBuffer:b_buf offset:0 atIndex:1];
+        [enc setBuffer:out_buf offset:0 atIndex:2];
+        [enc setBytes:&rows length:sizeof(rows) atIndex:3];
+        [enc setBytes:&inner_dim length:sizeof(inner_dim) atIndex:4];
+        [enc setBytes:&out_cols length:sizeof(out_cols) atIndex:5];
+
+        MTLSize grid = MTLSizeMake(count, 1, 1);
+        NSUInteger w = pso.maxTotalThreadsPerThreadgroup;
+        MTLSize tg = MTLSizeMake(std::min((NSUInteger)count, w), 1, 1);
+
+        [enc dispatchThreads:grid threadsPerThreadgroup:tg];
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+
+        memcpy(out.data(), out_buf.contents, count * sizeof(float));
     }
-
-    MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
-    if (a.empty() || b.empty() || a[0].size() != b.size())
-    {
-        out.clear();
-        return;
-    }
-
-    const uint32_t rows = a.size();
-    const uint32_t inner_dim = a[0].size();
-    const uint32_t out_cols = b[0].size();
-    out.resize(rows);
-    for(std::size_t i = 0; i < rows; i++)
-        out[i].resize(out_cols);
-
-    std::vector<float> compressed_a(a.size() * a[0].size());
-    std::vector<float> compressed_b(b.size() * b[0].size());
-    std::vector<float> compressed_out(rows * out_cols);
-
-    std::size_t k = 0;
-    for(std::size_t i = 0; i < a.size(); i++)
-        for(std::size_t j = 0; j < a[i].size(); j++)
-            compressed_a[k++] = a[i][j];
-
-    k = 0;
-    for(std::size_t i = 0; i < b.size(); i++)
-        for(std::size_t j = 0; j < b[i].size(); j++)
-            compressed_b[k++] = b[i][j];
-
-    const std::size_t count = compressed_out.size();
-
-    id<MTLBuffer> a_buf = [state->device newBufferWithBytes:compressed_a.data()
-                            length:compressed_a.size()*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    id<MTLBuffer> b_buf = [state->device newBufferWithBytes:compressed_b.data()
-                            length:compressed_b.size()*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    id<MTLBuffer> out_buf = [state->device newBufferWithLength:count*sizeof(float)
-                            options:MTLResourceStorageModeShared];
-
-    std::size_t idx = state->pipelineIndex["multiply_matrices"];
-    id<MTLComputePipelineState> pso = state->pipelines[idx];
-    id<MTLCommandBuffer> cmd = [state->queue commandBuffer];
-    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
-
-    [enc setComputePipelineState:pso];
-    [enc setBuffer:a_buf offset:0 atIndex:0];
-    [enc setBuffer:b_buf offset:0 atIndex:1];
-    [enc setBuffer:out_buf offset:0 atIndex:2];
-    [enc setBytes:&rows length:sizeof(rows) atIndex:3];
-    [enc setBytes:&inner_dim length:sizeof(inner_dim) atIndex:4];
-    [enc setBytes:&out_cols length:sizeof(out_cols) atIndex:5];
-
-    MTLSize grid = MTLSizeMake(count, 1, 1);
-    NSUInteger w = pso.maxTotalThreadsPerThreadgroup;
-    if (w > count) w = count;
-    MTLSize tg = MTLSizeMake(w, 1, 1);
-
-    [enc dispatchThreads:grid threadsPerThreadgroup:tg];
-    [enc endEncoding];
-    [cmd commit];
-    [cmd waitUntilCompleted];
-
-    float* outPtr = static_cast<float*>(out_buf.contents);
-    std::copy(outPtr, outPtr + count, compressed_out.begin());
-
-    for(std::size_t i = 0; i < count; i++)
-        out[i / out_cols][i % out_cols] = compressed_out[i];
 }
 
 bool MetalWrapper::isAvailable() const
@@ -232,4 +200,79 @@ bool MetalWrapper::hasPipeline(const std::string& functionName) const
     }
 
     return state->pipelineIndex.find(functionName) != state->pipelineIndex.end();
+}
+
+void* MetalWrapper::create_persistent_buffer(size_t size) 
+{
+    MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
+    id<MTLBuffer> buf = [state->device newBufferWithLength:size * sizeof(float) 
+                                                  options:MTLResourceStorageModeShared];
+    return (__bridge_retained void*)buf;
+}
+
+// Update weight contents instead of recreating
+void MetalWrapper::update_buffer(void* buffer_ptr, const std::vector<float>& data) 
+{
+    if (!buffer_ptr) return; // Guard against nulls
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>)buffer_ptr;
+    memcpy(buf.contents, data.data(), data.size() * sizeof(float));
+}
+
+void MetalWrapper::free_buffer(void* buffer_ptr) {
+    if (buffer_ptr) {
+        id<MTLBuffer> buf = (__bridge_transfer id<MTLBuffer>)buffer_ptr;
+        buf = nil; // Buffer is released here
+    }
+}
+
+void MetalWrapper::multiply_matrices_persistent(
+    void* input_buf, 
+    void* weight_buf, 
+    void* output_buf,
+    unsigned int rows, 
+    unsigned int inner_dim, 
+    unsigned int out_cols) 
+{
+    @autoreleasepool {
+        MetalWrapperImpl* state = static_cast<MetalWrapperImpl*>(impl);
+        uint32_t count = rows * out_cols;
+
+        // Input and Output still need temporary buffers (they change every sample)
+        id<MTLBuffer> in_b = (__bridge id<MTLBuffer>)input_buf;
+        id<MTLBuffer> we_b = (__bridge id<MTLBuffer>)weight_buf;
+        id<MTLBuffer> ou_b = (__bridge id<MTLBuffer>)output_buf;
+
+        id<MTLComputePipelineState> pso = state->pipelines[state->pipelineIndex["multiply_matrices"]];
+        id<MTLCommandBuffer> cmd = [state->queue commandBuffer];
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+
+        [enc setComputePipelineState:pso];
+        [enc setBuffer:in_b offset:0 atIndex:0];
+        [enc setBuffer:we_b offset:0 atIndex:1]; // Use persistent buffer
+        [enc setBuffer:ou_b offset:0 atIndex:2];
+        [enc setBytes:&rows length:sizeof(rows) atIndex:3];
+        [enc setBytes:&inner_dim length:sizeof(inner_dim) atIndex:4];
+        [enc setBytes:&out_cols length:sizeof(out_cols) atIndex:5];
+
+        [enc dispatchThreads:MTLSizeMake(count, 1, 1) 
+             threadsPerThreadgroup:MTLSizeMake(std::min((NSUInteger)count, pso.maxTotalThreadsPerThreadgroup), 1, 1)];
+        
+        [enc endEncoding];
+        [cmd commit];
+        [cmd waitUntilCompleted];
+    }
+}
+
+void MetalWrapper::read_buffer(void* buffer_ptr, std::vector<float>& out_vec)
+{
+    if (!buffer_ptr) return;
+    
+    id<MTLBuffer> buf = (__bridge id<MTLBuffer>)buffer_ptr;
+    
+    // Ensure the output vector is the correct size
+    size_t num_elements = buf.length / sizeof(float);
+    out_vec.resize(num_elements);
+    
+    // Copy from GPU-accessible memory to the CPU vector
+    memcpy(out_vec.data(), buf.contents, buf.length);
 }

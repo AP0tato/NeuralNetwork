@@ -18,7 +18,7 @@ file(GLOB MM_SOURCES "${METAL_DIR}/*.mm")
 
 list(REMOVE_ITEM CPP_SOURCES "${SRC_DIR}/test.cpp")
 
-add_library(neural_backend STATIC ${CPP_SOURCES} ${MM_SOURCES})
+add_library(neural_backend SHARED ${CPP_SOURCES} ${MM_SOURCES})
 
 target_include_directories(neural_backend
 	PUBLIC

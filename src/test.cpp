@@ -12,7 +12,7 @@ int main(int argc, char const *argv[])
         return 1;
 
     // add_arrays_test(gpu);
-    multiply_matrices_test(gpu);
+    // multiply_matrices_test(gpu);
 
     return 0;
 }
@@ -47,7 +47,7 @@ bool multiply_matrices_test(MetalWrapper &gpu)
     };
     std::vector<std::vector<float>> out;
 
-    gpu.multiply_matrices(a, b, out);
+    // gpu.multiply_matrices(a, b, out);
 
     for(size_t i = 0; i < out.size(); i++)
     {
